@@ -1,0 +1,431 @@
+#! /usr/bin/perl
+
+#####################################################################
+#
+# CLI wrapper script for Opsview
+#
+# Allows for execution of common Opsview tasks from the command line.
+# Great for Bash scripting, etc.
+#
+# Author: Timothy Patterson <tim@pc-professionals.net>
+# Date: 2014-01-17
+#
+# Requires: Perl 5.10.0 or higher
+#           Opsview::REST (found on CPAN)
+#           Getopt::Mixed (found on CPAN)
+#           Config:IniFiles (found on CPAN)
+#
+# Thanks go out to Miquel Ruiz <mruiz@cpan.org> for his work on the
+# Opsview::REST module, and to Fabien Cortina <freongrr on GitHub>
+# for his OpsView::Printer module.
+#
+#####################################################################
+
+use Opsview::REST;
+use Getopt::Mixed;
+use Config::IniFiles;
+use feature qw(switch);
+
+use FindBin qw($Bin);
+use lib "$Bin", "$Bin/../Opsview";
+require Opsview::Printer;
+
+$version = "0.6 (2014-01-17)";
+
+Getopt::Mixed::init('o=s op>o operation>o n=s name>n source>n d=s destination>d i=s ip>i t=s time>t c=s comment>c a=i notify>a s=i sticky>s g=s hostgroup>g p=s profile>p v=s service>v');
+while( my( $option, $value, $pretty ) = Getopt::Mixed::nextOption()) {
+   OPTION: {
+      $option eq 'o' and do {
+         $operation = $value;
+         last OPTION;
+      };
+      $option eq 'n' and do {
+         $name = $value;
+         last OPTION;
+      };
+      $option eq 'd' and do {
+         $destination = $value;
+         last OPTION;
+      };
+      $option eq 'i' and do {
+         $ip = $value;
+         last OPTION;
+      };
+      $option eq 't' and do {
+         $time = $value;
+         last OPTION;
+      };
+      $option eq 'c' and do {
+         $comment = $value;
+         last OPTION;
+      };
+      $option eq 'a' and do {
+         $notify = $value;
+         last OPTION;
+      };
+      $option eq 's' and do {
+         $sticky = $value;
+         last OPTION;
+      };
+      $option eq 'g' and do {
+         $group = $value;
+         last OPTION;
+      };
+      $option eq 'p' and do {
+         $profile = $value;
+         last OPTION;
+      };
+      $option eq 'v' and do {
+         $service = $value;
+         last OPTION;
+      };
+   }
+}
+Getopt::Mixed::cleanup();
+
+sub usage {
+   print "Usage: opsview [-p <config file profile name>] [-o | --op <operation>] <operation specific parameters>\n\n";
+   print "Code version: $version\n\n";
+   print "-p <config file profile name>  This parameter determines which profile to use from the  ~/.opsview-wrapper file.\n";
+   print "                               That file should contain authentication information, as well as which Opsview server\n";
+   print "                               to use. For more information, refer to the complete documentation.\n\n";
+   print "Operation:                 Parameters:                 Description:\n";
+   print "----------                 -----------                 ------------\n";
+   print "host-status                -n <hostname>               Displays the status of a given host.\n";
+   print "viewport-status                                        Displays the status of the viewport.\n";
+   print "hostgroup-status           -i <hostgroup id>           Displays the status of the specified hostgroup.\n";
+   print "                                                       You can optionally specifiy a parent hostgroup ID.\n";
+   print "disable-host-alerts        -n <hostname>               Places the specified host into downtime for the\n";
+   print "                           -t <time in mins>           specified number of minutes.\n";
+   print "                           -c <comment>\n";
+   print "enable-host-alerts         -n <hostname>               Brings the specified host out of downtime.\n";
+   print "disable-hostgroup-alerts   -n <hostgroup>              Places the specified hostgroup into downtime for the\n";
+   print "                           -t <time in mins>           specified number of minutes.\n";
+   print "                           -c <comment>\n";
+   print "enable-hostgroup-alerts    -n <hostgroup>              Brings the specified hostgroup out of downtime.\n";
+   print "clone-host                 -n <source hostname>        Clones an existing host to a new host entry.\n";
+   print "                           -d <destination hostname>\n";
+   print "                           -i <destination ip address>\n";
+   print "create-host                -n <hostname>               Creates a new host. Name and IP address are\n";
+   print "                           -i <ip address>             required.\n";
+   print "delete-host                -n <hostname>               Deletes the specified host.\n";
+   print "ack-host                   -n <hostname>               Acknolwedges all failed services on the specified\n";
+   print "                           -a <notify (1 or 0)>        host. You can optionally set the notify and/or\n";
+   print "                           -s <sticky (1 or 0)>        bits.  A comment is required.\n";
+   print "                           -c <comment>\n";
+   print "ack-service                -n <hostname>               Acknolwedges the specified service on the specified\n";
+   print "                           -v <service>                host. You can optionally set the notify and/or\n";
+   print "                           -a <notify (1 or 0)>        bits.  A comment is required.\n";
+   print "                           -s <sticky (1 or 0)>\n";
+   print "                           -c <comment>\n";
+   print "get-host-id                -n <hostname>               Retrieves internal Opsview ID for specified hostname.\n\n";
+}
+
+sub lookup_host_id {
+   my ($hostname) = @_;
+   $hostname =~ s/\*/\%/g;
+   if ($hostname eq '') { return 0; }
+
+   my $host = $ops->get_hosts(
+      name => { -like => "$hostname" },
+   );
+
+   if ( $host->{summary}->{rows} != 1 ) {
+      return 0;
+   }
+
+   return $host->{list}[0]->{id};
+}
+
+sub clone_host {
+   my ($source, $destination, $ip) = @_;
+
+   # Get ID of source host:
+   my $sourceid = lookup_host_id($source);
+   if ($sourceid < 1) {
+      die "ERROR: Could not find source hostname.\n";
+   }
+
+   # Clone the host:
+   my $clone = $ops->clone_host(
+      $sourceid,
+      name => $destination,
+      ip   => $ip,
+   );
+
+   # Error checking:
+   if ($clone->{object}->{name} eq $destination) { return 0; } else { return 1; }
+}
+
+sub disable_alerts {
+   my ($type, $object, $mins, $comment) = @_;
+
+   given($type) {
+      when('host') { $objecttype = 'hst.hostname'; }
+      when('hostgroup') { $objecttype = 'hg.hostgroupname'; }
+      default { return 1; }
+   }
+
+   $starttime = time();
+   $endtime = $starttime + ($mins * 60);
+
+   my $downtime = $ops->create_downtime(
+      $objecttype => $object,
+      starttime => $starttime,
+      endtime => $endtime,
+      comment => $comment,
+   );
+
+   return $downtime;
+}
+
+sub enable_alerts {
+   my ($type, $object) = @_;
+
+   given($type) {
+      when('host') { $objecttype = 'hst.hostname'; }
+      when('hostgroup') { $objecttype = 'hg.hostgroupname'; }
+      default { return 1; }
+   }
+
+   my $downtime = $ops->delete_downtime(
+      $objecttype => $object,
+   );
+
+   return $downtime;
+}
+
+sub get_status {
+   my ($type, $object) = @_;
+
+   my $key = '';
+   my $value = '';
+
+   given($type) {
+      when('hostgroup') { 
+         $objecttype = 'hostgroup'; 
+         $printer = 'printHostGroups';
+         if ($object ne '') {
+	    $key = 'hostgroupid';
+            $value = $object;
+         }
+      }
+      when('viewport') {
+         $objecttype = 'viewport';
+         $printer = 'printViews';
+      }
+      when('host') {
+         $objecttype = 'host';
+         $printer = 'printHosts';
+         $key = 'host';
+         $value = $object;
+      }
+      default { $objecttype = 'hostgroup'; }
+   }
+
+   my $status = $ops->status(
+      $objecttype,
+      $key => $value, 
+   );
+
+   Opsview::Printer->$printer($status->{'list'}, $object);
+}
+
+sub ack_host {
+   my ($name, $comment, $notify, $sticky) = @_;
+
+   my $ack = $ops->acknowledge(
+      'svc.hostname' => $name,
+      'svc.servicename' => '%',
+      comment => "$comment",
+      notify => $notify,
+      sticky => $sticky,
+   );
+
+   return $ack;
+}
+
+sub ack_service {
+   my ($name, $service, $comment, $notify, $sticky) = @_;
+
+   my $ack = $ops->acknowledge(
+      'svc.hostname' => $name,
+      'svc.servicename' => "$service",
+      comment => "$comment",
+      notify => $notify,
+      sticky => $sticky,
+   );
+
+   return $ack;
+}
+
+sub create_host {
+   my ($name, $ip) = @_;
+
+   my $host = $ops->create_host(
+      name => $name,
+      ip => $ip,
+   );
+   
+   if($host->{object}->{name} eq $name) { return 0; } else { return 1; }
+}
+
+sub delete_host {
+   my ($name) = @_;
+
+   # Get ID of source host:
+   my $sourceid = lookup_host_id($name);
+   if ($sourceid < 1) {
+      die "ERROR: Could not find source hostname.\n";
+   }   
+
+   my $host = $ops->delete_host(
+      $sourceid,
+   );
+
+   if($host->{success} eq '1') { return 0; } else { return 1; }
+}
+
+### Main Program Entry ###
+
+if (!$operation) {
+   usage();   
+   die "ERROR: No operation specified via -o.\n";
+}
+
+# Read configuration from ~/.opsview-wrapper
+my $cfg = Config::IniFiles->new( -file => $ENV{"HOME"} . '/.opsview-wrapper' );
+if(!$cfg) { die "ERROR: Could not read config file at ~/.opsview-wrapper"; }
+if($profile eq '') { $profile = 'default'; }
+
+$base_url = $cfg->val( "$profile", 'base_url' );
+$user = $cfg->val( "$profile", 'username' );
+$pass = $cfg->val( "$profile", 'password' );
+
+$ops = Opsview::REST->new(
+   base_url => "$base_url",
+   user => "$user",
+   pass => "$pass",
+);
+
+# Step through the possible operations:
+given($operation) {
+   when('get-host-id') { 
+      if (!$name) { usage(); die "ERROR: No hostname defined in parameters.\n"; }
+      my $id = lookup_host_id($name);
+      print "Final ID: $id \n";
+   }
+   when('clone-host') {
+      if (!$name) { usage(); die "ERROR: No source hostname defined in parameters.\n"; }
+      if (!$destination) { usage(); die "ERROR: No destination hostname defined in parameters.\n"; }
+      if (!$ip) { usage(); die "ERROR: No destination IP address defined in parameters.\n"; }
+
+      my $status = clone_host($name, $destination, $ip);
+      if ($status == 0) {
+         print "Cloning $name to $destination at $ip was successful.\n";
+      } else {
+         die "FAILED. Cloning $name to $destination was unsuccessful\n";
+      }
+   }
+   when('disable-host-alerts') {
+      if (!$name) { usage(); die "ERROR: No hostname defined in parameters.\n"; }
+      if (!$time) { usage(); die "ERROR: No time defined in parameters.\n"; }
+      if (!$comment) { usage(); die "ERROR: No comment defined in parameters.\n"; }
+
+      my $status = disable_alerts('host', $name, $time, $comment);
+      if ($status->{list}->{hosts}[0]->{hostname} eq $name) {
+         print "Alerts have been disabled on $name for $time minutes. Reason: '$comment'.\n";
+      } else {
+         die "FAILED. Alerts for $name have NOT been disabled.\n";
+      }
+   }
+   when('enable-host-alerts') {
+      if (!$name) { usage(); die "ERROR: No hostname defined in parameters.\n"; }
+
+      my $status = enable_alerts('host', $name);
+      if ($status->{list}->{hosts}[0]->{hostname} eq $name) {
+         print "Alerts have been enabled on $name.\n";
+      } else {
+         die "FAILED. Alerts for $name have NOT been enabled.\n";
+      }
+   }
+   when('disable-hostgroup-alerts') {
+      if (!$name) { usage(); die "ERROR: No hostgroup defined in parameters.\n"; }
+      if (!$time) { usage(); die "ERROR: No time defined in parameters.\n"; }
+      if (!$comment) { usage(); die "ERROR: No comment defined in parameters.\n"; }
+
+      my $status = disable_alerts('hostgroup', $name, $time, $comment);
+      if ($status->{list}->{hostgroups}[0]->{name} eq $name) {
+         print "Alerts have been disabled on $name.\n";
+      } else {
+         die "FAILED. Alerts for $name have NOT been disabled.\n";
+      }
+   }
+   when('enable-hostgroup-alerts') {
+      if (!$name) { usage(); die "ERROR: No hostgroup defined in parameters.\n"; }
+
+      my $status = enable_alerts('hostgroup', $name);
+      if ($status->{list}->{hostgroups}[0]->{name} eq $name) {
+         print "Alerts have been enabled on $name.\n";
+      } else {
+         die "FAILED. Alerts for $name have NOT been enabled.\n";
+      }
+   }
+   when('hostgroup-status') {
+      get_status('hostgroup', $ip);
+   }
+   when('viewport-status') {
+      get_status('viewport');
+   }
+   when('host-status') {
+      if (!$name) { usage(); die "ERROR: No hostname defined in parameters.\n"; }
+
+      get_status('host', $name);
+   }
+   when('ack-host') {
+      if (!$name) { usage(); die "ERROR: No hostname defined in parameters.\n"; }
+      if (!$comment) { usage(); die "ERROR: No comment defined in parameters.\n"; }
+
+      my $status = ack_host($name, $comment, $notify, $sticky);
+      my $num = $status->{summary}->{num_services}; 
+      print "All service failures on host $name have been acknowledged.\n";
+   }
+   when('ack-service') {
+      if (!$name) { usage(); die "ERROR: No hostname defined in parameters.\n"; }
+      if (!$comment) { usage(); die "ERROR: No comment defined in parameters.\n"; }
+      if (!$service) { usage(); die "ERROR: No service defined in parameters.\n"; }
+
+      my $status = ack_service($name, $service, $comment, $notify, $sticky);
+
+      if ($status->{summary}->{num_services} > 0) {
+         print "Successfully acknowledged service $service on $name. Reason: $comment\n";
+      } else {
+         die "ERROR: Could not acknowledge service $service on $name.\n";
+      }
+   }
+   when('create-host') {
+      if (!$name) { usage(); die "ERROR: No hostname defined in parameters.\n"; }
+      if (!$ip) { usage(); die "ERROR: No IP address defined in parameters.\n"; }
+
+      my $status = create_host($name, $ip, $group, $time);
+   
+      if ($status == 0) {
+         print "Creating host $name with $ip was successful.\n";
+      } else {
+         die "FAILED. Host $name was not created.\n";
+      }
+   }
+   when('delete-host') {
+      if (!$name) { usage(); die "ERROR: No hostname defined in parameters.\n"; }
+
+      my $status = delete_host($name);
+
+      if ($status == 0) {
+         print "Deleting host $name was successful.\n";
+      } else {
+         die "FAILED. Did not delete host $name.\n";
+      }
+   }
+
+   default { usage(); die("ERROR: '$operation' is not a valid operation.\n"); }
+}
