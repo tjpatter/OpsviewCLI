@@ -9,6 +9,7 @@
 #
 # Author: Timothy Patterson <tim@pc-professionals.net>
 # Date: 2014-01-17
+# Modified: 2014-03-18
 #
 # Requires: Perl 5.10.0 or higher
 #           Opsview::REST (found on CPAN)
@@ -19,6 +20,9 @@
 # Opsview::REST module, and to Fabien Cortina <freongrr on GitHub>
 # for his OpsView::Printer module.
 #
+# A special thank you also goes out to Ryan Wassa <ryanwassa@tegraserv.net>
+# for his help with debugging the data structures and moral support while
+# I was developing this tool. I would be bald by now without his help...
 #####################################################################
 
 use Opsview::REST;
@@ -30,7 +34,7 @@ use FindBin qw($Bin);
 use lib "$Bin", "$Bin/../Opsview";
 require Opsview::Printer;
 
-$version = "0.6 (2014-01-17)";
+$version = "0.7 (2014-03-18)";
 
 Getopt::Mixed::init('o=s op>o operation>o n=s name>n source>n d=s destination>d i=s ip>i t=s time>t c=s comment>c a=i notify>a s=i sticky>s g=s hostgroup>g p=s profile>p v=s service>v');
 while( my( $option, $value, $pretty ) = Getopt::Mixed::nextOption()) {
@@ -118,6 +122,8 @@ sub usage {
    print "                           -a <notify (1 or 0)>        bits.  A comment is required.\n";
    print "                           -s <sticky (1 or 0)>\n";
    print "                           -c <comment>\n";
+   print "add-keyword                -n <hostname>               Adds an existing keyword to an existing host.\n";
+   print "                           -c <keyword>\n";
    print "get-host-id                -n <hostname>               Retrieves internal Opsview ID for specified hostname.\n\n";
 }
 
@@ -286,6 +292,72 @@ sub delete_host {
    if($host->{success} eq '1') { return 0; } else { return 1; }
 }
 
+sub add_keyword {
+   my ($name, $comment) = @_;
+
+   # Get ID of source host:
+   my $sourceid = lookup_host_id($name);
+   if ($sourceid < 1) {
+      die "ERROR: Could not find source hostname.\n";
+   }
+
+   # Get ID of keyword:
+   my $keyword = $ops->get_keywords(
+      name => { -like => "$comment" },
+   );
+
+   if ( $keyword->{summary}->{rows} != 1 ) {
+      return 1;
+   } 
+
+   $keywordid = $keyword->{list}[0]->{id};
+
+   # Retrieve existing host information:
+
+   my $host = $ops->get_host(
+      $sourceid
+   );
+
+   # Create new hash and assign it the proper values:
+   %newkeywords = ( ref => "/rest/config/keyword/$keywordid", name => "$comment");
+
+   $i = 0;
+   while(1) { if($host->{object}->{keywords}[$i]) { $i++; } else { last; } } 
+
+   # Write new hash to proper location:
+   $host->{object}->{keywords}[$i] = \%newkeywords;
+
+   my $newhost = $ops->create_or_update_host(
+      name => "$name",
+      keywords => $host->{object}->{keywords}
+   );
+
+   ## TODO: Find a way to check status. Cannot simply compare $host to $newhost, as 
+   #        $newhost becomes sorted...
+
+   return 0;
+}
+
+sub get_all_hostdata {
+   # This subroutine is for debugging purposes ONLY...
+
+   my ($name) = @_;
+   
+   # Get ID of source host:
+   my $sourceid = lookup_host_id($name);
+   if ($sourceid < 1) { 
+      die "ERROR: Could not find source hostname.\n";
+   }
+
+   my $host = $ops->get_host(
+      $sourceid,
+   );
+
+   print Dumper($host);
+ 
+   return $host;
+}
+
 ### Main Program Entry ###
 
 if (!$operation) {
@@ -424,6 +496,18 @@ given($operation) {
          print "Deleting host $name was successful.\n";
       } else {
          die "FAILED. Did not delete host $name.\n";
+      }
+   }
+   when('add-keyword') {
+      if (!$name) { usage(); die "ERROR: No keyword defined in parameters.\n"; }
+      if (!$comment) { usage(); die "ERROR: No keyword defined in parameters.\n"; }
+
+      my $status = add_keyword($name, $comment);
+
+      if ($status == 0) {
+         print "Keyword '$comment' has been added to '$name' successfully.\n";      
+      } else {
+         die "FAILED. Could not add keyword to host $name.\n";
       }
    }
 
